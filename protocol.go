@@ -1,11 +1,11 @@
 package phantom_tcp
 
-import "net"
+//import "net"
 
-type Packet interface {
-	Serialize() []byte
-}
+//type Packet interface {
+//Serialize() []byte
+//}
 
-type Protocol interface {
-	ReadPacket(conn *net.TCPConn) (Packet, error)
-}
+//type Protocol interface {
+//ReadPacket(conn *net.TCPConn) (Packet, error)
+//}

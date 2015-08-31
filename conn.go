@@ -1,6 +1,7 @@
 package phantom_tcp
 
 import (
+	"bufio"
 	"errors"
 	"net"
 	"sync"
@@ -14,51 +15,41 @@ var (
 	ErrReadBlocking  = errors.New("read blocking")
 )
 
-type Conn struct {
-	server            *Server
-	conn              *net.TCPConn
-	extraData         interface{}
-	closeOnce         sync.Once
-	closeFlag         int32
-	closeChan         chan bool
-	packetSendChan    chan Packet
-	packetReceiveChan chan Packet
+type connection struct {
+	server    *Server
+	conn      *net.TCPConn
+	closeOnce sync.Once
+	closeFlag int32
+	chClose   chan bool
+	chSend    chan []byte
+	chReceive chan []byte
 }
 
-type Callback interface {
-	OnConnect(*Conn) bool
-	OnMessage(*Conn, Packet) bool
-	OnClose(*Conn)
-}
+func newConn(conn *net.TCPConn, server *Server) {
 
-func newConn(conn *net.TCPConn, server *Server) *Conn {
-	return &Conn{
-		server:            server,
-		conn:              conn,
-		closeChan:         make(chan bool),
-		packetSendChan:    make(chan Packet, server.config.PacketSendChanLimit),
-		packetReceiveChan: make(chan Packet, server.config.PacketReceiveChanLimit),
+	c := &connection{
+		server:    server,
+		conn:      conn,
+		chClose:   make(chan bool),
+		chSend:    make(chan []byte, sendBuf),
+		chReceive: make(chan []byte, receiveBuf),
 	}
-}
 
-func (c *Conn) GetExtraData() interface{} {
-	return c.extraData
-}
+	if !c.handler.OnConnect(c) {
+		return nil
+	}
 
-func (c *Conn) PutExtraData(data interface{}) {
-	return c.conn
-}
+	go c.loop()
 
-func (c *Conn) GetRawConn() *net.TCPConn {
-	return c.conn
+	return c
 }
 
 func (c *Conn) Close() {
 	c.closeOnce.Do(func() {
 		atomic.StoreInt32(&c.closeFlag, 1)
-		close(c.closeChan)
+		close(c.chClose)
 		c.conn.Close()
-		c.server.callback.OnClose(c)
+		c.handler.OnClose(c)
 	})
 }
 
@@ -66,47 +57,23 @@ func (c *Conn) IsClosed() bool {
 	return atomic.LoadInt32(&c.closeFlag) == 1
 }
 
-func (c *Conn) AsyncReadPacket(timeout time.Duration) (Packet, error) {
+func (c *Conn) Write(m []byte, timeout time.Duration) error {
 	if c.IsClosed() {
-		return nil, ErrConnClosing
-	}
-
-	if timeout == 0 {
-		select {
-		case p := <-c.packetReceiveChan:
-			return p, nil
-		default:
-			return nil, ErrReadBlocking
-		}
-	} else {
-		select {
-		case p := <-c.packetReceiveChan:
-			return p, nil
-		case <-c.closeChan:
-			return nil, ErrConnClosing
-		case <-time.After(timeout):
-			return nil, ErrReadBlocking
-		}
-	}
-}
-
-func (c *Conn) AsyncWritePacket(p Packet, timeout time.Duration) error {
-	if c.IsClose() {
 		return ErrConnClosing
 	}
 
 	if timeout == 0 {
 		select {
-		case c.packetSendChan <- p:
+		case c.chSend <- m:
 			return nil
 		default:
 			return ErrWriteBlocking
 		}
 	} else {
 		select {
-		case c.packetSendChan <- p:
+		case c.chSend <- m:
 			return nil
-		case <-c.closeChan:
+		case <-c.chClose:
 			return ErrConnClosing
 		case <-time.After(timeout):
 			return ErrWriteBlocking
@@ -114,17 +81,7 @@ func (c *Conn) AsyncWritePacket(p Packet, timeout time.Duration) error {
 	}
 }
 
-func (c *Conn) Do() {
-	if !c.server.callback.OnConnect(c) {
-		return
-	}
-
-	go c.handleLoop()
-	go c.readLoop()
-	go c.writeLoop()
-}
-
-func (c *Conn) readLoop() {
+func (c *Conn) loop() {
 	c.server.waitGroup.Add(1)
 	defer func() {
 		recover()
@@ -132,64 +89,26 @@ func (c *Conn) readLoop() {
 		c.server.waitGroup.Done()
 	}()
 
+	reader := bufio.NewReader(c)
+
 	for {
 		select {
-		case <-c.server.exitChan:
+		case <-c.server.chExit:
 			return
-		case <-c.closeChan:
+		case <-c.chClose:
 			return
+		case m := <-c.chSend:
+			if _, err := c.conn.Write(m); err != nil {
+				return
+			}
 		}
 
-		p, err := c.server.protocol.ReadPacket(c.conn)
+		m, err := reader.ReadString('\n')
 
 		if err != nil {
 			return
 		}
 
-		c.packetReceiveChan <- p
-	}
-}
-
-func (c *Conn) writeLoop() {
-	c.server.waitGroup.Add(1)
-	defer func() {
-		recover()
-		c.Close()
-		c.server.waitGroup.Done()
-	}()
-
-	for {
-		select {
-		case <-c.server.exitChan:
-			return
-		case <-c.closeChan:
-			return
-		case p := <-c.packetSendChan:
-			if _, err := c.conn.Write(p.Serialize()); err != nil {
-				return
-			}
-		}
-	}
-}
-
-func (c *Conn) handleLoop() {
-	c.server.waitGroup.Add(1)
-	defer func() {
-		recover()
-		c.Close()
-		c.server.waitGroup.Done()
-	}()
-
-	for {
-		select {
-		case <-c.server.exitChan:
-			return
-		case <-c.closeChan:
-			return
-		case p := <-c.packetReceiveChan:
-			if !c.server.callback.OnMessage(c, p) {
-				return
-			}
-		}
+		c.server.handler.OnMessage(m)
 	}
 }
