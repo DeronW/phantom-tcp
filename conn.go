@@ -12,11 +12,11 @@ import (
 var (
 	ErrConnClosing   = errors.New("conn close")
 	ErrWriteBlocking = errors.New("write blocking")
-	ErrReadBlocking  = errors.New("read blocking")
 )
 
-type connection struct {
-	server    *Server
+type Conn struct {
+	Id        uint32
+	cfg       *ConnConfig
 	conn      *net.TCPConn
 	closeOnce sync.Once
 	closeFlag int32
@@ -25,23 +25,28 @@ type connection struct {
 	chReceive chan []byte
 }
 
-func newConn(conn *net.TCPConn, server *Server) {
+type ConnConfig struct {
+	SendBuf    uint32
+	ReceiveBuf uint32
+	Handler    Handler
+	WaitGroup  *sync.WaitGroup
+	ExitChan   chan bool
+}
 
-	c := &connection{
-		server:    server,
+func newConn(conn *net.TCPConn, cfg *ConnConfig) {
+	c := &Conn{
+		cfg:       cfg,
 		conn:      conn,
 		chClose:   make(chan bool),
-		chSend:    make(chan []byte, sendBuf),
-		chReceive: make(chan []byte, receiveBuf),
+		chSend:    make(chan []byte, cfg.SendBuf),
+		chReceive: make(chan []byte, cfg.ReceiveBuf),
 	}
 
-	if !c.handler.OnConnect(c) {
-		return nil
+	if !cfg.Handler.OnConnect(c) {
+		return
 	}
 
 	go c.loop()
-
-	return c
 }
 
 func (c *Conn) Close() {
@@ -49,7 +54,7 @@ func (c *Conn) Close() {
 		atomic.StoreInt32(&c.closeFlag, 1)
 		close(c.chClose)
 		c.conn.Close()
-		c.handler.OnClose(c)
+		c.cfg.Handler.OnClose(c)
 	})
 }
 
@@ -82,18 +87,18 @@ func (c *Conn) Write(m []byte, timeout time.Duration) error {
 }
 
 func (c *Conn) loop() {
-	c.server.waitGroup.Add(1)
+	c.cfg.WaitGroup.Add(1)
 	defer func() {
 		recover()
 		c.Close()
-		c.server.waitGroup.Done()
+		c.cfg.WaitGroup.Done()
 	}()
 
-	reader := bufio.NewReader(c)
+	reader := bufio.NewReader(c.conn)
 
 	for {
 		select {
-		case <-c.server.chExit:
+		case <-c.cfg.ExitChan:
 			return
 		case <-c.chClose:
 			return
@@ -103,12 +108,12 @@ func (c *Conn) loop() {
 			}
 		}
 
-		m, err := reader.ReadString('\n')
+		m, err := reader.ReadBytes('\n')
 
 		if err != nil {
 			return
 		}
 
-		c.server.handler.OnMessage(m)
+		c.cfg.Handler.OnMessage(c, m)
 	}
 }

@@ -1,4 +1,4 @@
-package pahntom_go
+package phantom_tcp
 
 // interface of methods that are used as callbacks on a connection
 type Handler interface {
