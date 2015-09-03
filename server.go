@@ -13,7 +13,12 @@ type ServerConfig struct {
 	Net        string
 	SendBuf    uint32
 	ReceiveBuf uint32
-	Deadline   time.Duration
+
+	Deadline          time.Duration
+	KeepAlive         bool
+	KeepAliveIdle     time.Duration
+	KeepAliveCount    int
+	KeepAliveInterval time.Duration
 }
 
 func (c *ServerConfig) tcpAddr() (*net.TCPAddr, error) {
@@ -23,6 +28,7 @@ func (c *ServerConfig) tcpAddr() (*net.TCPAddr, error) {
 type Server struct {
 	srvCfg  *ServerConfig
 	connCfg *ConnConfig
+	tcpCfg  *KeepAliveConfig
 	//handler Handler
 	//protocol  Protocol
 	ExitChan  chan bool
@@ -43,8 +49,16 @@ func NewServer(cfg *ServerConfig, handler Handler) *Server {
 		ExitChan:   ec,
 	}
 
+	tcpCfg := &KeepAliveConfig{
+		KeepAlive:         cfg.KeepAlive,
+		KeepAliveIdle:     cfg.KeepAliveIdle,
+		KeepAliveCount:    cfg.KeepAliveCount,
+		KeepAliveInterval: cfg.KeepAliveInterval,
+	}
+
 	return &Server{
 		srvCfg:    cfg,
+		tcpCfg:    tcpCfg,
 		connCfg:   connCfg,
 		ExitChan:  ec,
 		waitGroup: wg,
@@ -83,6 +97,7 @@ func (s *Server) Start() error {
 			return err
 		}
 
+		SetKeepAlive(conn, s.tcpCfg)
 		go newConn(conn, s.connCfg)
 	}
 }
