@@ -19,6 +19,8 @@ type ServerConfig struct {
 	KeepAliveIdle     time.Duration
 	KeepAliveCount    int
 	KeepAliveInterval time.Duration
+
+	Separtor byte
 }
 
 func (c *ServerConfig) tcpAddr() (*net.TCPAddr, error) {
@@ -47,6 +49,7 @@ func NewServer(cfg *ServerConfig, handler Handler) *Server {
 		Handler:    handler,
 		WaitGroup:  wg,
 		ExitChan:   ec,
+		Separtor:   cfg.Separtor,
 	}
 
 	tcpCfg := &KeepAliveConfig{
@@ -88,13 +91,17 @@ func (s *Server) Start() error {
 		select {
 		case <-s.connCfg.ExitChan:
 			return nil
+		default:
 		}
 
-		s.listener.SetDeadline(time.Now().Add(s.srvCfg.Deadline))
-
+		if s.srvCfg.Deadline != 0 {
+			s.listener.SetDeadline(time.Now().Add(s.srvCfg.Deadline))
+		}
 		conn, err := s.listener.AcceptTCP()
+
 		if err != nil {
-			return err
+			return err // when debug or development, use this.
+			//continue
 		}
 
 		SetKeepAlive(conn, s.tcpCfg)

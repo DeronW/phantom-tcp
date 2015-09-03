@@ -31,6 +31,7 @@ type ConnConfig struct {
 	Handler    Handler
 	WaitGroup  *sync.WaitGroup
 	ExitChan   chan bool
+	Separtor   byte
 }
 
 func newConn(conn *net.TCPConn, cfg *ConnConfig) {
@@ -41,11 +42,9 @@ func newConn(conn *net.TCPConn, cfg *ConnConfig) {
 		chSend:    make(chan []byte, cfg.SendBuf),
 		chReceive: make(chan []byte, cfg.ReceiveBuf),
 	}
-
 	if !cfg.Handler.OnConnect(c) {
 		return
 	}
-
 	go c.loop()
 }
 
@@ -56,6 +55,10 @@ func (c *Conn) Close() {
 		c.conn.Close()
 		c.cfg.Handler.OnClose(c)
 	})
+}
+
+func (c *Conn) RemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
 }
 
 func (c *Conn) IsClosed() bool {
@@ -95,7 +98,6 @@ func (c *Conn) loop() {
 	}()
 
 	reader := bufio.NewReader(c.conn)
-
 	for {
 		select {
 		case <-c.cfg.ExitChan:
@@ -106,14 +108,12 @@ func (c *Conn) loop() {
 			if _, err := c.conn.Write(m); err != nil {
 				return
 			}
+		default:
 		}
-
-		m, err := reader.ReadBytes('\n')
-
+		m, err := reader.ReadBytes(c.cfg.Separtor)
 		if err != nil {
 			return
 		}
-
 		c.cfg.Handler.OnMessage(c, m)
 	}
 }
