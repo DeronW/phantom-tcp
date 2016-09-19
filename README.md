@@ -1,6 +1,9 @@
 Phantom TCP
 ==========
 
+使用GO语言开发的 TCP 服务框架. 与原生TCP服务相比, 封装了消息序列化功能, 
+并且针对具体的业务场景做了相应优化
+
 based on https://github.com/gansidui/gotcp
 
 based on https://github.com/felixge/tcpkeepalive
